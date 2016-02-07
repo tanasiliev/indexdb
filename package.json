@@ -1,0 +1,19 @@
+{
+  "name": "indexdb",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "gulp",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Atanas Iliev",
+  "license": "MIT",
+  "devDependencies": {
+    "browser-sync": "^2.11.1",
+    "chai": "^3.5.0",
+    "gulp": "^3.9.0",
+    "gulp-uglify": "^1.5.1",
+    "mocha": "^2.4.5"
+  }
+}
