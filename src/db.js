@@ -1,316 +1,199 @@
 (function(){
 
-    window.indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB;
-    window.IDBTransaction = window.IDBTransaction || window.webkitIDBTransaction || window.msIDBTransaction || {READ_WRITE: "readwrite"}; // This line should only be needed if it is needed to support the object's constants for older browsers
-    window.IDBKeyRange = window.IDBKeyRange || window.webkitIDBKeyRange || window.msIDBKeyRange;
+  window.indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB;
+  window.IDBTransaction = window.IDBTransaction || window.webkitIDBTransaction || window.msIDBTransaction || {READ_WRITE: "readwrite"};
+  window.IDBKeyRange = window.IDBKeyRange || window.webkitIDBKeyRange || window.msIDBKeyRange;
+ 
+  var TRANSACTION_MODE = { 
+      RW : 'readwrite', 
+      RO: 'readonly'
+  };
 
+  var asyncResponse = function(asyncRequest){
+      var request = asyncRequest();
+      return {
+         done: function(handler){
+            var req = this.request;
+            req.onsuccess = req.onerror = function(e){
+                var error = (e.type == 'error') ? e.target.error : null;
+                handler(error, e.target.result);
+             };
+         }.bind({request: request})
+      };
+  }; 
 
-    var DB_STATE = ['INACTIVE','PENDING','DONE'];
-    var PRIVATE_METHODS = '_';
-    var TRANSACTION_MODE = {
-        RW : 'readwrite',
-        RO: 'readonly'
-    };
-
-    var DB_VERSION = 14;
-
-    var stateManager = {
-        db: {},
-        version : {
-            _version : {},
-            add: function(name, version){
-                this._version[name] = version;
-            },
-            upgrade: function(name){
-                var version = this._version[name] + 1;
-                this._version[name] = version;
-                return version;
-            }
-        }
-    };
-
-    var asyncErrorResponse = function(msg){
-        return {
-            success: function(){},
-            error: function(handler){
-               handler({ target :{ error: msg }});
-            }
-        };
-    };
-
-    var waitingAsyncRequest = function(asyncRequest){
-        var ref = {};
-        var requestFun  = function(){
-            var request = asyncRequest();
-            request.onsuccess = ref.onsuccess;
-            request.onerror = ref.onerror;
-        };
-        return {
-            request: requestFun,
-            ref: {
-                success: function(handler){
-                    ref.onsuccess = handler;
-                },
-                error: function(handler){
-                    ref.onerror = handler;
-                }
-            }
-        };
-    };
-
-    var asyncResponse = function(asyncRequest, wait, errorMessage){
-        if(wait){
-            return waitingAsyncRequest(asyncRequest);
-        }
-        if(errorMessage){
-            return asyncErrorResponse(errorMessage);
-        }
-        var request = asyncRequest();
-        return {
-           success: function(handler){
-             this.request.onsuccess = handler;
-           }.bind({request: request}),
-           error: function(handler){
-             this.request.onerror = handler;
-           }.bind({request: request})
-        };
-    };
-
-    var getStore = function(name, getDb){
-        var methods = {};
-        var actions = [];
-        var store = new ObjectStore(name, null);
-        var keys = Object.keys(ObjectStore.prototype)
-                   .filter(function(item){ return item[0] != PRIVATE_METHODS});
-        keys.forEach(function(name){
-             methods[name] = function(){
-                var args = arguments;
-                var request = function(){
-                    store.db = getDb();
-                    return store[name].apply(store, args);
-                };
-                if(getDb()){
-                    return asyncResponse(request);
-                }
-                var async = asyncResponse(request, true);
-                actions.push(async.request);
-                return async.ref;
-            };
-        });
-        return {
-            methods: methods,
-            actions: actions
-        };
-   };
-
-   var ObjectStore = function(name, db){
+   var Store = function(name, db){
         this.db = db;
         this.name = name;
    };
 
-   ObjectStore.prototype = {
+   Store.prototype = {
         add : function(item){
-            return this._getStore(TRANSACTION_MODE.RW).add(item);
+            return this._request(function(){ 
+              return this._store(TRANSACTION_MODE.RW).add(item); 
+            });
         },
         get : function(key){
-            return this._getStore(TRANSACTION_MODE.RO).get(key);
+            return this._request(function(){ 
+              return this._store(TRANSACTION_MODE.RO).get(key);
+            });
         },
         clear: function(){
-            return this._getStore(TRANSACTION_MODE.RW).clear();
+           return this._request(function(){ 
+              return this._store(TRANSACTION_MODE.RW).clear();
+           });
         },
         remove: function(index){
-            return this._getStore(TRANSACTION_MODE.RW).delete(index);
+           return this._request(function(){ 
+              return this._store(TRANSACTION_MODE.RW).delete(index);
+           });
         },
         count: function(){
-            return this._getStore(TRANSACTION_MODE.RO).count();
+           return this._request(function(){ 
+             return this._store(TRANSACTION_MODE.RO).count();
+           });
         },
-        _getStore : function(mode){
+        _store : function(mode){
             var transaction = this.db.transaction([this.name], mode);
             return transaction.objectStore(this.name);
+        },
+        _request: function(request){
+          return asyncResponse(request.bind(this));
         }
    };
 
-   var DataBase = function(name){
-        this.db = null;
+   var DataBase = function(name, version){
         this.name = name;
-        this.version = 0;
-        this.state = DB_STATE[0];
-        this.stores = [];
-        this.newStores = [];
-        this.oldStores = [];
+        this.version = version || 1;
+        this.db = null;
+        this._request = {};
    };
 
    DataBase.prototype = {
-        open: function(version){
-            var self = this;
-            self.state = DB_STATE[1];
-            var request = indexedDB.open(this.name, version);
-            request.onupgradeneeded  = function(e){
-                 var db = e.target.result;
-                 var newStores = self.newStores;
-                 if(newStores.length){
-                    newStores.forEach(function(store){
-                       if(!db.objectStoreNames.contains(store.name)) {
-                          db.createObjectStore(store.name, store.options);
-                       }
-                    });
-                 }
-                var oldStores = self.oldStores;
-                if(oldStores.length){
-                    oldStores.forEach(function(name){
-                       if(db.objectStoreNames.contains(name)) {
-                           db.deleteObjectStore(name);
-                       }
-                    });
-                 }
-            };
-            request.onsuccess = function(e){
-                self.db = e.target.result;
-                self.version = self.db.version;
-                stateManager.version.add(self.name, self.version);
-                self.state = DB_STATE[2];
-                self.stores.forEach(function(actions){
-                    while(actions.length){
-                       actions.shift()();
-                    }
-                });
-            };
-            request.onerror = function(e){
-                console.log('error', e.target.error);
-                self.state = DB_STATE[0]
-            };
-            return request;
-        },
-        store: function(name){
-            var self = this;
-            if(self.state == DB_STATE[0]){
-                self.open(DB_VERSION);
+     stores: function(stores){
+        var self = this;
+        self._request.onupgradeneeded = function(e){
+             var db = e.target.result;
+             self.db = db;
+             for (var name in stores){
+               db.createObjectStore(name, stores[name]);
+               self[name] = new Store(name, db);
             }
-            var store = getStore(name, function(){
-                return self.db;
-            });
-            self.stores.push(store.actions);
-            return store.methods;
-        },
-        close: function(){
-            var db = this.db;
-            if(db){
-                db.close();
-                this.db = null;
-                this.state = DB_STATE[0];
-            }
-        },
-        createStores : function(stores){
-            var self = this;
-
-            if(self.state == DB_STATE[2]){
-                var msg;
-                stores.forEach(function(store){
-                    if(self.getStoreNames().indexOf(store.name) !== -1){
-                        msg = "try to add existing store";
-                        return;
-                    }
-                });
-                if(msg) {
-                    return asyncResponse(null, null, msg);
-                }
-                self.db.close();
-                this.newStores = stores;
-                return asyncResponse(function(){
-                    return self.open(stateManager.version.upgrade(self.name));
-                });
-            }
-
-        },
-        deleteStores : function(stores){
-            var self = this;
-            if(self.state == DB_STATE[2]){
-                var msg;
-                 stores.forEach(function(name){
-                    if(self.getStoreNames().indexOf(name) === -1){
-                        msg = "the store does not exist in db " + self.name;
-                        return;
-                    }
-                 });
-                 if(msg) {
-                    return asyncResponse(null, null, msg);
-                 }
-                 self.db.close();
-            }
-            this.oldStores = stores;
-            return asyncResponse(function(){
-                 return self.open(stateManager.version.upgrade(self.name));
-            });
+        };
+     },
+     open: function(version){
+        var self = this;
+        var args = [self.name];
+        if(version){
+            args.push(version);
         }
-   };
+        var request = indexedDB.open.apply(indexedDB, args);
+        var callback;
+        for(var key in self._request){
+          if(key == 'onsuccess'){
+              request[key] = function(e){
+                 self._request[key](e);
+                 callback && callback( e.type == 'error' ? e.target.error : null, e.target.result);
+              }
+          }else {
+            request[key] = self._request[key];
+            request.onsuccess = function(e){
+              callback && callback( e.type == 'error' ? e.target.error : null, e.target.result);
+            }; 
+          }
+        }
+
+        if(!request.onerror){
+          request.onerror = function(e){
+            callback && callback( e.type == 'error' ? e.target.error : null, e.target.result);
+          }; 
+        }
+        return {
+          done: function(handler){
+              callback = handler;
+          }
+        };
+     },
+     close: function(){
+        var db = this.db; 
+        if(db){
+          db.close();
+        }
+     }
+   }
 
    var db = {
-       use: function(name){
-          var db;
-          if(!stateManager.db[name]){
-             db = new DataBase(name);
-             stateManager.db[name] = db;
-          } else {
-            db = stateManager.db[name];
-          }
-          return {
-            store : db.store.bind(db)
-          };
-       },
-       modify: function(name){
-            if(stateManager.db[name]){
-                stateManager.db[name].close();
-            }
+        create: function(name){
             var db = new DataBase(name);
-            return {
-                deleteStores : function(){
-                    return asyncResponse(function(){
-                         return self.open(stateManager.version.upgrade(self.name));
-                    });
+            return db;
+        },
+        use: function(name){
+            var db = new DataBase(name);
+            db._request.onsuccess = function(e){
+                 var db = e.target.result;
+                 this.db = db;
+                 var stores = db.objectStoreNames;
+                 for(var i = 0; i < stores.length; i++){
+                    this[stores[i]] = new Store(name, db); 
                 }
-            };
-
-       },
-       drop: function(name){
+            }.bind(db);
+            return db;
+        },
+        drop: function(name){
           return asyncResponse(function(){
              return indexedDB.deleteDatabase(name);
           });
-       }
-   };
-
-   window.db1 = db;
-
+       }   
+   }
+   window.idb = db;
+   
 })();
 
-  var db;
-  var openRequest = indexedDB.open("test_1");
-  openRequest.onsuccess = function(e) {
-     console.log("onsuccess");
-     db = e.target.result;
+/* create DB */
+// var db = idb.create('Persons');
+// db.stores({
+//     customers: { autoIncrement:true },
+//     friends: { autoIncrement:true },
+// });
 
-   }
+// db.open().done(function(error, result){
+//     if(error){
+//         console.log(error);
+//         return;
+//     }
+//     console.log(result);
 
-   openRequest.onerror = function(e) {
-      console.log("onerror");
-    }
+//     //db.close(); 
+//     db.friends.add({ name: 'gasko', age: 13}).done(function(error, result){
+//         db.friends.get(result).done(function(error, result){
+//           console.log('get', result);
+//         });
+//     });
+
+//     db.friends.add({ name: 'gaskonio', age: 15}).done(function(error){
+//         db.friends.count().done(function(error, result){
+//           console.log('count', result);
+//         });
+//     });
+// });
+
+/* use DB */
+
+//  var db = idb.use('Persons').done(function(error, result){
+//     if(error){
+//         console.log(error);
+//         return;
+//     }
+//     console.log('use', result);
+//     db.friends.get(1).done(function(error, result){
+//       console.log('get', result);
+//       db.close();
+//     });
+
+// });
 
 
-  function getPeople() {
 
-  	var transaction = db.transaction(["firstOS"],"readonly");
-    transaction.oncomplete = function(e){
-       console.log('t oncomplete', e)
-    }
 
-    transaction.onerror = function(){
-      console.log('t onerror');
-    }
-  	var store = transaction.objectStore("firstOS1");
-    var request = store.get(2);
-    request.onsuccess = function(){
-      console.log('r onsuccess');
-    }
-    request.onerror = function(){
-      console.log('r onerror');
-    }
-  }
+
+
