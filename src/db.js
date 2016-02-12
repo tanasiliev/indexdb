@@ -1,7 +1,7 @@
 (function(){
 
   window.indexedDB = window.indexedDB || window.mozIndexedDB || window.webkitIndexedDB || window.msIndexedDB;
-  window.IDBTransaction = window.IDBTransaction || window.webkitIDBTransaction || window.msIDBTransaction || {READ_WRITE: "readwrite"};
+  window.IDBTransaction = window.IDBTransaction || window.webkitIDBTransaction || window.msIDBTransaction;
   window.IDBKeyRange = window.IDBKeyRange || window.webkitIDBKeyRange || window.msIDBKeyRange;
  
   var TRANSACTION_MODE = { 
@@ -19,10 +19,26 @@
       return {
          done: function(handler){
             var req = this.request;
-            req.onsuccess = req.onerror = responseHandler(e, handler);
+            req.onsuccess = req.onerror = function(e){
+              responseHandler(e, handler);
+            };
          }.bind({request: request})
       };
   }; 
+
+  var setIndexOptions = function(field, value){
+      var flag = false;
+      if(field){
+        if(field.length && field.indexOf(value)  !== - 1){
+           flag = true;
+        } else {
+           if(field == value){
+              flag = true;
+            }
+        }  
+      }
+      return flag; 
+   };
 
    var Store = function(name, db){
         this.db = db;
@@ -78,7 +94,19 @@
              var db = e.target.result;
              self.db = db;
              for (var name in stores){
-               db.createObjectStore(name, stores[name]);
+               var names = [],
+                   indexes = stores[name].indexes,
+                   objectStore = db.createObjectStore(name, stores[name].options);
+               if(indexes && indexes.names){
+                   names = indexes.names.trim().split(/\s+/);
+               }
+               names.forEach(function(name, i){
+                  var options = {
+                    unique: setIndexOptions(indexes.unique, i + 1),
+                    multiEntry: setIndexOptions(indexes.multiEntry, i + 1)
+                  };
+                  objectStore.createIndex(name, name, options);
+               });
                self[name] = new Store(name, db);
             }
         };
@@ -124,9 +152,11 @@
             db._request.onsuccess = function(e){
                  var db = e.target.result;
                  this.db = db;
-                 var stores = db.objectStoreNames;
+                 var store,
+                     stores = db.objectStoreNames;
                  for(var i = 0; i < stores.length; i++){
-                    this[stores[i]] = new Store(name, db); 
+                    store = stores[i];
+                    this[store] = new Store(store, db); 
                 }
             }.bind(db);
             return db;
@@ -135,7 +165,7 @@
           return asyncResponse(function(){
              return indexedDB.deleteDatabase(name);
           });
-       }   
+        }   
    }
    window.idb = db;
    
@@ -144,9 +174,18 @@
 /* create DB */
 // var db = idb.create('Persons');
 // db.stores({
-//     customers: { autoIncrement:true },
-//     friends: { autoIncrement:true },
+//     customers: { 
+//       options: { autoIncrement:true },
+//       indexes: {
+//           names: 'name age email',
+//           unique: [1,3],
+//           multiEntry: 2
+//       } 
+//     },
+//     friends: { autoIncrement:true }
 // });
+
+// db.open();
 
 // db.open().done(function(error, result){
 //     if(error){
