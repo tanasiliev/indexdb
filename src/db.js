@@ -9,15 +9,17 @@
       RO: 'readonly'
   };
 
+  var responseHandler = function(e, handler){
+     var error = (e.type == 'error') ? e.target.error : null;
+     handler(error, e.target.result);
+  };
+
   var asyncResponse = function(asyncRequest){
       var request = asyncRequest();
       return {
          done: function(handler){
             var req = this.request;
-            req.onsuccess = req.onerror = function(e){
-                var error = (e.type == 'error') ? e.target.error : null;
-                handler(error, e.target.result);
-             };
+            req.onsuccess = req.onerror = responseHandler(e, handler);
          }.bind({request: request})
       };
   }; 
@@ -84,30 +86,20 @@
      open: function(version){
         var self = this;
         var args = [self.name];
-        if(version){
-            args.push(version);
-        }
+        if(version) args.push(version);
+        
         var request = indexedDB.open.apply(indexedDB, args);
         var callback;
-        for(var key in self._request){
-          if(key == 'onsuccess'){
-              request[key] = function(e){
-                 self._request[key](e);
-                 callback && callback( e.type == 'error' ? e.target.error : null, e.target.result);
-              }
-          }else {
-            request[key] = self._request[key];
-            request.onsuccess = function(e){
-              callback && callback( e.type == 'error' ? e.target.error : null, e.target.result);
-            }; 
-          }
-        }
-
-        if(!request.onerror){
-          request.onerror = function(e){
-            callback && callback( e.type == 'error' ? e.target.error : null, e.target.result);
-          }; 
-        }
+        ['onupgradeneeded', 'onsuccess', 'onerror'].forEach(function(action){
+            request[action] = function(e){
+               if(self._request[action]){
+                  self._request[action](e);
+               }
+               if(['onsuccess', 'onerror'].indexOf(action) !== - 1){
+                  if(callback) responseHandler(e, callback);
+               }
+            };
+        });
         return {
           done: function(handler){
               callback = handler;
