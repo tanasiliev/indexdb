@@ -4,10 +4,12 @@
   window.IDBTransaction = window.IDBTransaction || window.webkitIDBTransaction || window.msIDBTransaction;
   window.IDBKeyRange = window.IDBKeyRange || window.webkitIDBKeyRange || window.msIDBKeyRange;
  
+  var IDB_EVENTS = ['onupgradeneeded', 'onsuccess', 'onerror'];
+  var IDB_REQUEST_EVENTS = ['onsuccess', 'onerror'];
   var TRANSACTION_MODE = { 
       RW : 'readwrite', 
       RO: 'readonly'
-  };
+  }; 
 
   var responseHandler = function(e, handler){
      var error = (e.type == 'error') ? e.target.error : null;
@@ -15,15 +17,16 @@
   };
 
   var asyncResponse = function(asyncRequest){
-      var request = asyncRequest();
-      return {
-         done: function(handler){
-            var req = this.request;
-            req.onsuccess = req.onerror = function(e){
-              responseHandler(e, handler);
-            };
-         }.bind({request: request})
-      };
+    return {
+       done: function(handler){
+          var request = this.request;
+          IDB_REQUEST_EVENTS.forEach(function(name){
+              request[name] = function(e){
+                responseHandler(e, handler);
+              };
+          });
+      }.bind({request: asyncRequest()})
+    };
   }; 
 
   var setIndexOptions = function(field, value){
@@ -118,12 +121,12 @@
         
         var request = indexedDB.open.apply(indexedDB, args);
         var callback;
-        ['onupgradeneeded', 'onsuccess', 'onerror'].forEach(function(action){
+        IDB_EVENTS.forEach(function(action){
             request[action] = function(e){
                if(self._request[action]){
                   self._request[action](e);
                }
-               if(['onsuccess', 'onerror'].indexOf(action) !== - 1){
+               if(IDB_REQUEST_EVENTS.indexOf(action) !== - 1){
                   if(callback) responseHandler(e, callback);
                }
             };
@@ -142,36 +145,37 @@
      }
    }
 
-   var db = {
-        create: function(name){
-            var db = new DataBase(name);
-            return db;
-        },
-        use: function(name){
-            var db = new DataBase(name);
-            db._request.onsuccess = function(e){
-                 var db = e.target.result;
-                 this.db = db;
-                 var store,
-                     stores = db.objectStoreNames;
-                 for(var i = 0; i < stores.length; i++){
-                    store = stores[i];
-                    this[store] = new Store(store, db); 
-                }
-            }.bind(db);
-            return db;
-        },
-        drop: function(name){
-          return asyncResponse(function(){
-             return indexedDB.deleteDatabase(name);
-          });
-        }   
-   }
-   window.idb = db;
+   var idb = {
+          create: function(name){
+              var db = new DataBase(name);
+              return db;
+          },
+          use: function(name){
+              var db = new DataBase(name);
+              db._request.onsuccess = function(e){
+                   var db = e.target.result;
+                   this.db = db;
+                   var store,
+                       stores = db.objectStoreNames;
+                   for(var i = 0; i < stores.length; i++){
+                      store = stores[i];
+                      this[store] = new Store(store, db); 
+                  }
+              }.bind(db);
+              return db;
+          },
+          drop: function(name){
+            return asyncResponse(function(){
+               return indexedDB.deleteDatabase(name);
+            });
+          }   
+   };
+   window.idb = idb;
    
 })();
 
 /* create DB */
+
 // var db = idb.create('Persons');
 // db.stores({
 //     customers: { 
@@ -182,10 +186,10 @@
 //           multiEntry: 2
 //       } 
 //     },
-//     friends: { autoIncrement:true }
+//     friends: { 
+//       options: { autoIncrement:true }
+//     }
 // });
-
-// db.open();
 
 // db.open().done(function(error, result){
 //     if(error){
